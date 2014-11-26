@@ -22,6 +22,65 @@ def getText(nodelist):
     return ''.join(rc)
 
 
+class Meaning(object):
+    def __init__(self, senseNumNode=None):
+        self.elems = []
+        self.senseNum = []
+        if senseNumNode:
+            self._parseSenseNum(senseNumNode)
+
+    def _parseSenseNum(self, node):
+        for child in node.childNodes:
+            if child.nodeType == node.TEXT_NODE:
+                if child.data:
+                    for numPart in child.data.strip().split(' '):
+                        self.senseNum.append(numPart)
+            elif child.nodeType == node.ELEMENT_NODE:
+                if child.nodeName == 'snp':
+                    self.senseNum.append(getText(child.childNodes))
+
+    def _getDefText(self, nodelist):
+        rc = []
+        for node in nodelist:
+            if node.nodeType == node.TEXT_NODE:
+                text = node.data.strip(': ')
+                if len(text):
+                    rc.append(text)
+            if node.nodeType == node.ELEMENT_NODE:
+                if node.nodeName == 'd_link':
+                    rc.append(getText(node.childNodes))
+                if node.nodeName == 'sx':
+                    sx = getText(node.childNodes)
+                    if len(rc):
+                        sx = ", %s" % sx
+                    rc.append(sx)
+        return ''.join(rc).strip(' ')
+
+    def getSenseNumber(self):
+        return self.senseNum
+
+    def setSenseNumber(self, node):
+        self._parseSenseNum(node)
+
+    def parseDefElement(self, node):
+        if node.nodeName == 'dt':
+            self.elems.append(('dt', self._getDefText(node.childNodes)))
+        elif node.nodeName == 'sd':
+            self.elems.append(('sd',  getText(node.childNodes)))
+
+    def valid(self):
+        return len(self.elems) > 0
+
+    def __repr__(self):
+        rep = ''.join(["{0}. ".format(num) for num in self.senseNum])
+        for (type, value) in self.elems:
+            if type == 'dt':
+                rep = "{0} {1}".format(rep, value)
+            elif type == 'sd':
+                rep = "{0}; {1}:".format(rep, value)
+        return rep
+
+
 class Entry(object):
     def __init__(self, id):
         self.id = id
@@ -29,28 +88,24 @@ class Entry(object):
         self.defTexts = []
 
     def parse(self, tree):
+        meaning = Meaning()
+        meanings = []
         self.funcLabel = getText(tree.getElementsByTagName("fl")[0].childNodes)
         for d in tree.getElementsByTagName("def")[0].childNodes:
             if d.nodeType == d.ELEMENT_NODE:
                 if d.nodeName == 'sn':
-                    num = getText(d.childNodes)
-                    if ' ' in num:
-                        num = num.replace(' ', '. ')
-                if d.nodeName == 'sd':
-                    sd = getText(d.childNodes)
-                    if len(sd):
-                        sd = "; %s" % sd
-                if d.nodeName == 'dt':
-                    txt = self.getDefText(d.childNodes)
-                if len(txt):
-                    line = txt
-                    if len(sd):
-                        line = "; %s %s" % (sd, line)
-                    if len(num):
-                        line = "%s. %s" % (num, line)
-                    defns.append(line)
-                    (num, txt, sd) = ('', '', '')
-            defs.append((fl, defns))
+                    if meaning.getSenseNumber():
+                        if meaning.valid() is True:
+                            meanings.append(meaning)
+                        meaning = Meaning(d)
+                    else:
+                        meaning.setSenseNumber(d)
+                elif d.nodeName == 'vt':
+                    pass
+                else:
+                    meaning.parseDefElement(d)
+
+        return (self.funcLabel, [str(m) for m in meanings])
 
 
 class Dict(callbacks.Plugin):
@@ -66,29 +121,6 @@ class Dict(callbacks.Plugin):
     def listCommands(self):
         return self.__parent.listCommands(["define"])
 
-    def _getDefText(self, nodelist):
-        rc = []
-        for node in nodelist:
-            self.log.debug(' Child node: %s, %s, %s %s'
-                           % (node.nodeType,
-                              node.nodeName,
-                              node.nodeValue,
-                              node.attributes))
-            if node.nodeType == node.TEXT_NODE:
-                self.log.debug('  Text node: %s' % node.data)
-                text = node.data.strip(':')
-                if len(text):
-                    rc.append(text)
-            if node.nodeType == node.ELEMENT_NODE:
-                if node.nodeName == 'd_link':
-                    rc.append(getText(node.childNodes))
-                if node.nodeName == 'sx':
-                    sx = getText(node.childNodes)
-                    if len(rc):
-                        sx = "; %s" % sx
-                    rc.append(sx)
-        return ''.join(rc).strip(' ')
-
     def _define(self, word, maxNum=3):
         defs = []
         payload = {'key': self.registryValue('apiKey')}
@@ -98,30 +130,8 @@ class Dict(callbacks.Plugin):
         for n, e in enumerate(tree.getElementsByTagName("entry"), start=1):
             if n > maxNum:
                 break;
-            defns = []
-            (num, txt, sd) = ('', '', '')
-            fl = getText(e.getElementsByTagName("fl")[0].childNodes)
-            for d in e.getElementsByTagName("def")[0].childNodes:
-                if d.nodeType == d.ELEMENT_NODE:
-                    if d.nodeName == 'sn':
-                        num = getText(d.childNodes)
-                        if ' ' in num:
-                            num = num.replace(' ', '. ')
-                    if d.nodeName == 'sd':
-                        sd = getText(d.childNodes)
-                        if len(sd):
-                            sd = "; %s" % sd
-                    if d.nodeName == 'dt':
-                        txt = self._getDefText(d.childNodes)
-                    if len(txt):
-                        line = txt
-                        if len(sd):
-                            line = "; %s %s" % (sd, line)
-                        if len(num):
-                            line = "%s. %s" % (num, line)
-                        defns.append(line)
-                        (num, txt, sd) = ('', '', '')
-            defs.append((fl, defns))
+            entry = Entry(e.getAttribute('id'))
+            defs.append(entry.parse(e))
         return defs
 
     def define(self, irc, msg, args, word):
